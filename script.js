@@ -1,4 +1,3 @@
-
 /* ─── State ──────────────────────────────────────────────────── */
 const editor = document.getElementById('editor');
 const preview = document.getElementById('preview');
@@ -10,6 +9,18 @@ let currentTheme = 'dark';
 let currentLayout = 'h';
 let isFlipped = false;
 let fsMode = null; // null | 'editor' | 'preview'
+let spellCheckEnabled = false;
+
+/* ─── Auto-save ──────────────────────────────────────────────── */
+const AUTOSAVE_KEY = 'livemark_autosave';
+let autosaveTimeout;
+
+function autosave() {
+    clearTimeout(autosaveTimeout);
+    autosaveTimeout = setTimeout(() => {
+        localStorage.setItem(AUTOSAVE_KEY, editor.value);
+    }, 800);
+}
 
 /* ─── Mermaid init ───────────────────────────────────────────── */
 mermaid.initialize({
@@ -122,10 +133,35 @@ function updateLineNumbers() {
     lineNums.scrollTop = editor.scrollTop;
 }
 
+/* ─── Status Bar ─────────────────────────────────────────────── */
+function updateStatusBar() {
+    const val = editor.value;
+    const words = val.trim() ? val.trim().split(/\s+/).length : 0;
+    const readingMins = Math.max(1, Math.round(words / 200));
+    document.getElementById('wc-words').textContent = words;
+    document.getElementById('wc-chars').textContent = val.length;
+    document.getElementById('wc-reading').textContent = `~${readingMins} min read`;
+    updateCursorPos();
+}
+
+function updateCursorPos() {
+    const val = editor.value;
+    const pos = editor.selectionStart;
+    const before = val.slice(0, pos);
+    const lines = before.split('\n');
+    document.getElementById('wc-ln').textContent = lines.length;
+    document.getElementById('wc-col').textContent = lines[lines.length - 1].length + 1;
+}
+
+editor.addEventListener('keyup', updateCursorPos);
+editor.addEventListener('click', updateCursorPos);
+
 
 /* ─── Sync Scroll ────────────────────────────────────────────── */
 editor.addEventListener('input', () => {
     updateLineNumbers();
+    updateStatusBar();
+    autosave();
     renderPreview();
     if (document.getElementById('find-bar').classList.contains('show')) {
         findInEditor(findInput.value);
@@ -358,7 +394,7 @@ function findInEditor(q) {
     const text = editor.value;
     const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
     editorMatches = [...text.matchAll(re)];
-    
+
     if (editorMatchIndex === -1 && editorMatches.length > 0) {
         editorMatchIndex = 0;
     } else if (editorMatches.length === 0) {
@@ -398,11 +434,11 @@ function updateHighlightLayer() {
 function scrollMatchIntoView(index) {
     const m = editorMatches[index];
     if (!m) return;
-    
+
     editor.setSelectionRange(m.index, m.index + m[0].length);
-    
+
     const lines = editor.value.substr(0, m.index).split('\n').length;
-    const lineHeight = 20.8; 
+    const lineHeight = 20.8;
     const targetScroll = (lines - 5) * lineHeight;
     // Only scroll if out of view or forced
     if (editor.scrollTop > targetScroll || editor.scrollTop + editor.clientHeight < targetScroll + (lineHeight * 5)) {
@@ -444,7 +480,7 @@ function replaceNext() {
     if (!m) return;
     const val = editor.value;
     editor.value = val.substring(0, m.index) + r + val.substring(m.index + m[0].length);
-    
+
     findInEditor(q);
     renderPreview();
     updateLineNumbers();
@@ -635,10 +671,138 @@ document.getElementById('file-open').addEventListener('change', function () {
     reader.onload = e => {
         editor.value = e.target.result;
         renderPreview();
+        updateStatusBar();
         showToast(`Opened: ${file.name}`);
     };
     reader.readAsText(file);
     this.value = '';
+});
+
+/* ─── Drag & Drop ────────────────────────────────────────────── */
+const editorWrap = document.getElementById('editor-wrap');
+const dropOverlay = document.getElementById('drop-overlay');
+
+editorWrap.addEventListener('dragover', e => {
+    e.preventDefault();
+    editorWrap.classList.add('drag-over');
+});
+editorWrap.addEventListener('dragleave', e => {
+    if (!editorWrap.contains(e.relatedTarget)) {
+        editorWrap.classList.remove('drag-over');
+    }
+});
+editorWrap.addEventListener('drop', e => {
+    e.preventDefault();
+    editorWrap.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (!/\.(md|txt|markdown)$/i.test(file.name)) {
+        showToast('Please drop a .md or .txt file');
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = ev => {
+        editor.value = ev.target.result;
+        renderPreview();
+        updateStatusBar();
+        showToast(`Opened: ${file.name}`);
+    };
+    reader.readAsText(file);
+});
+
+/* ─── Spell Check Toggle ─────────────────────────────────────── */
+document.getElementById('spellcheck-btn').addEventListener('click', function () {
+    spellCheckEnabled = !spellCheckEnabled;
+    editor.setAttribute('spellcheck', spellCheckEnabled);
+    // Force browser to re-evaluate spellcheck by briefly toggling focus
+    editor.blur();
+    editor.focus();
+    this.textContent = `Spell: ${spellCheckEnabled ? 'ON' : 'OFF'}`;
+    this.classList.toggle('active', spellCheckEnabled);
+    showToast(`Spell check ${spellCheckEnabled ? 'enabled' : 'disabled'}`);
+});
+
+/* ─── Keyboard Shortcuts Panel ───────────────────────────────── */
+const SHORTCUTS = [
+    { section: 'Editor' },
+    { key: 'Ctrl + F', desc: 'Find & replace' },
+    { key: 'Ctrl + S', desc: 'No-op (auto-saved)' },
+    { key: 'Tab', desc: 'Indent 2 spaces' },
+    { key: 'Escape', desc: 'Close find bar / exit fullscreen' },
+    { section: 'Format' },
+    { key: 'Toolbar: B', desc: 'Bold selection' },
+    { key: 'Toolbar: I', desc: 'Italic selection' },
+    { key: 'Toolbar: S', desc: 'Strikethrough' },
+    { key: 'Toolbar: <>', desc: 'Inline code' },
+    { key: 'Toolbar: H1–3', desc: 'Heading levels' },
+    { section: 'Navigation' },
+    { key: '?', desc: 'Open this shortcuts panel' },
+    { key: 'Ctrl + F', desc: 'Open find & replace' },
+    { section: 'View' },
+    { key: 'Fullscreen ⛶', desc: 'Toggle editor or preview fullscreen' },
+    { key: 'Escape', desc: 'Exit fullscreen' },
+    { key: 'Sync Scroll ↺', desc: 'Toggle synchronized scrolling' },
+];
+
+function showShortcutsModal() {
+    const overlay = document.getElementById('modal-overlay');
+    document.getElementById('modal-title').textContent = 'Keyboard Shortcuts';
+    const body = document.getElementById('modal-body');
+    body.innerHTML = '';
+
+    const table = document.createElement('div');
+    table.className = 'shortcuts-table';
+    SHORTCUTS.forEach(item => {
+        if (item.section) {
+            const sec = document.createElement('div');
+            sec.className = 'shortcuts-section';
+            sec.textContent = item.section;
+            table.appendChild(sec);
+        } else {
+            const row = document.createElement('div');
+            row.className = 'shortcuts-row';
+            row.innerHTML = `<kbd>${item.key}</kbd><span>${item.desc}</span>`;
+            table.appendChild(row);
+        }
+    });
+    body.appendChild(table);
+
+    const actionsDiv = document.getElementById('modal-actions');
+    actionsDiv.innerHTML = '';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.className = 'btn';
+    closeBtn.onclick = closeModal;
+    actionsDiv.appendChild(closeBtn);
+    overlay.classList.add('show');
+}
+
+document.getElementById('shortcuts-btn').addEventListener('click', showShortcutsModal);
+
+document.addEventListener('keydown', e => {
+    if (e.key === '?' && document.activeElement !== editor &&
+        document.activeElement !== document.getElementById('find-input') &&
+        document.activeElement !== document.getElementById('replace-input')) {
+        e.preventDefault();
+        showShortcutsModal();
+    }
+});
+
+/* ─── Preview Font Controls ──────────────────────────────────── */
+const fontFamilyMap = {
+    serif: "'Crimson Pro', Georgia, serif",
+    sans: "'Inter', system-ui, sans-serif",
+    mono: "'JetBrains Mono', monospace"
+};
+
+document.getElementById('preview-font-select').addEventListener('change', function () {
+    document.getElementById('preview').style.fontFamily = fontFamilyMap[this.value];
+});
+
+document.getElementById('preview-font-size').addEventListener('input', function () {
+    const size = parseInt(this.value);
+    document.getElementById('preview').style.fontSize = size + 'px';
+    document.getElementById('preview-font-size-label').textContent = size + 'px';
 });
 
 /* ─── Dropdowns ──────────────────────────────────────────────── */
@@ -800,8 +964,16 @@ function showToast(msg) {
     toastTimeout = setTimeout(() => t.classList.remove('show'), 2500);
 }
 
-/* ─── Import Sample ──────────────────────────────────────────── */
 /* ─── Init ───────────────────────────────────────────────────── */
-editor.value = SAMPLE;
-renderPreview();
-updateLineNumbers();
+(function init() {
+    const saved = localStorage.getItem(AUTOSAVE_KEY);
+    if (saved && saved.trim()) {
+        editor.value = saved;
+        showToast('Restored from auto-save');
+    } else {
+        editor.value = SAMPLE;
+    }
+    renderPreview();
+    updateLineNumbers();
+    updateStatusBar();
+}());
