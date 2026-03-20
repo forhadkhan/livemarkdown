@@ -1,0 +1,11 @@
+# GitHub Pages configuration
+# Ensures XML, TXT and other static files are served with correct content-type headers
+
+include:
+  - sitemap.xml
+  - robots.txt
+  - llms.txt
+  - humans.txt
+  - .well-known
+
+plugins: []
