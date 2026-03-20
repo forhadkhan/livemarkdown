@@ -71,9 +71,9 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 Built with ❤️ by [Forhad Khan](https://forhadkhan.com)
 
-## Built With AI 🤖
+### Acknowledgments
 
 This project was developed with the collaborative assistance of:
-- **Claude 3.5 Sonnet** (Anthropic)
-- **Gemini 1.5 Flash** (Google)
-- **Antigravity** (Google DeepMind)
+- **Claude 4.6 Sonnet** (Anthropic)
+- **Gemini 3 Flash** (Google)
+- **Antigravity** (Google)
