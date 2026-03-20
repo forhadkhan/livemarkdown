@@ -1,8 +1,8 @@
-# LiveMarkdown 🖋️
+# Live Markdown
 
 **LiveMarkdown** is a fast, free, and privacy-focused online Markdown editor with real-time preview. Built for developers, technical writers, and students, it provides a premium writing experience directly in your browser without the need for installation or account creation.
 
-![LiveMarkdown Preview](https://livemarkdown.app/og-image.png)
+![LiveMarkdown Preview](./assets/images/og-image.png)
 
 ## Key Features
 
@@ -70,3 +70,10 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ---
 
 Built with ❤️ by [Forhad Khan](https://forhadkhan.com)
+
+## Built With AI 🤖
+
+This project was developed with the collaborative assistance of:
+- **Claude 3.5 Sonnet** (Anthropic)
+- **Gemini 1.5 Flash** (Google)
+- **Antigravity** (Google DeepMind)
