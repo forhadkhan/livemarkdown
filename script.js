@@ -964,6 +964,15 @@ function showToast(msg) {
     toastTimeout = setTimeout(() => t.classList.remove('show'), 2500);
 }
 
+/* ─── Mobile Menu ────────────────────────────────────────────── */
+const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+const navbar = document.getElementById('navbar');
+if (mobileMenuBtn && navbar) {
+    mobileMenuBtn.addEventListener('click', () => {
+        navbar.classList.toggle('menu-open');
+    });
+}
+
 /* ─── Init ───────────────────────────────────────────────────── */
 (function init() {
     const saved = localStorage.getItem(AUTOSAVE_KEY);
