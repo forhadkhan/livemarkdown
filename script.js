@@ -973,6 +973,27 @@ if (mobileMenuBtn && navbar) {
     });
 }
 
+/* ─── Toolbar Toggle ─────────────────────────────────────────── */
+const toggleToolbarBtn = document.getElementById('btn-toggle-toolbar');
+const toolbarElement = document.getElementById('toolbar');
+const toolbarIcon = document.getElementById('toolbar-toggle-icon');
+
+if (toggleToolbarBtn && toolbarElement) {
+    toggleToolbarBtn.addEventListener('click', () => {
+        const isHidden = toolbarElement.style.display === 'none';
+        toolbarElement.style.display = isHidden ? 'flex' : 'none';
+        
+        // Toggle icon path (chevron-up when visible, chevron-down when hidden)
+        if (isHidden) {
+            toolbarIcon.innerHTML = '<path d="m18 15-6-6-6 6"/>'; // Chevron up
+            showToast('Toolbar shown');
+        } else {
+            toolbarIcon.innerHTML = '<path d="m6 9 6 6 6-6"/>'; // Chevron down
+            showToast('Toolbar hidden');
+        }
+    });
+}
+
 /* ─── Init ───────────────────────────────────────────────────── */
 (function init() {
     const saved = localStorage.getItem(AUTOSAVE_KEY);
