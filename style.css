@@ -291,7 +291,8 @@ body {
 
 .btn-accent:hover {
     background: var(--accent);
-    color: #000
+    color: #fff;
+    border-color: var(--accent)
 }
 
 .btn-danger:hover {
@@ -1389,7 +1390,7 @@ body.fullscreen-preview #toolbar {
         gap: 4px;
     }
 
-    .tb-sep, 
+    .tb-sep,
     .tb-spacer {
         display: none;
     }
