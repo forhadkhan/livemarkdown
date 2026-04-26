@@ -564,6 +564,180 @@ body.dragging.layout-v {
     height: 12px
 }
 
+/* ─── Tab Bar ────────────────────────────────────────────────── */
+#tab-bar {
+    display: flex;
+    align-items: stretch;
+    height: 34px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    position: relative;
+}
+
+.tab-list {
+    display: flex;
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-behavior: smooth;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.tab-list::-webkit-scrollbar {
+    display: none;
+}
+
+.tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    height: 100%;
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+    color: var(--text2);
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 0;
+    max-width: 180px;
+    position: relative;
+    transition: background var(--transition), color var(--transition);
+}
+
+.tab:hover {
+    background: var(--bg3);
+    color: var(--text);
+}
+
+.tab.active {
+    background: var(--bg);
+    color: var(--text);
+    border-bottom: 2px solid var(--accent);
+}
+
+.tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 120px;
+}
+
+.tab-modified {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    display: none;
+}
+
+.tab.modified .tab-modified {
+    display: block;
+}
+
+.tab-close {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text3);
+    cursor: pointer;
+    border-radius: 3px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: all var(--transition);
+    padding: 0;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+    opacity: 1;
+}
+
+.tab-close:hover {
+    background: var(--danger);
+    color: #fff;
+}
+
+.tab-close svg {
+    width: 10px;
+    height: 10px;
+}
+
+.tab-rename-input {
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+    padding: 1px 4px;
+    border-radius: 3px;
+    outline: none;
+    width: 110px;
+}
+
+.tab-scroll-btn {
+    width: 22px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: var(--bg2);
+    color: var(--text3);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all var(--transition);
+    padding: 0;
+}
+
+.tab-scroll-btn:hover {
+    background: var(--bg3);
+    color: var(--text);
+}
+
+.tab-scroll-btn.visible {
+    display: flex;
+}
+
+.tab-scroll-btn svg {
+    width: 10px;
+    height: 10px;
+}
+
+.tab-new-btn {
+    width: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-left: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text3);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all var(--transition);
+    padding: 0;
+}
+
+.tab-new-btn:hover {
+    background: var(--bg3);
+    color: var(--accent);
+}
+
+.tab-new-btn svg {
+    width: 12px;
+    height: 12px;
+}
+
 /* ─── Editor ─────────────────────────────────────────────────── */
 #editor-wrap {
     flex: 1;

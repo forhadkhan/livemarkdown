@@ -11,14 +11,229 @@ let isFlipped = false;
 let fsMode = null; // null | 'editor' | 'preview'
 let spellCheckEnabled = false;
 
-/* ─── Auto-save ──────────────────────────────────────────────── */
-const AUTOSAVE_KEY = 'livemark_autosave';
+/* ─── File Manager ───────────────────────────────────────────── */
+const FILES_KEY = 'livemark_files';
+const ACTIVE_FILE_KEY = 'livemark_active_file';
+const AUTOSAVE_KEY = 'livemark_autosave'; // legacy key for migration
+const MAX_FILES = 50;
+
+let files = [];        // Array of { id, name, content, savedContent }
+let activeFileId = null;
 let autosaveTimeout;
 
+function generateFileId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function getActiveFile() {
+    return files.find(f => f.id === activeFileId) || null;
+}
+
+function saveFilesToStorage() {
+    localStorage.setItem(FILES_KEY, JSON.stringify(files));
+    localStorage.setItem(ACTIVE_FILE_KEY, activeFileId);
+}
+
+function isFileModified(file) {
+    return file.content !== file.savedContent;
+}
+
+function createFile(name, content, activate = true) {
+    if (files.length >= MAX_FILES) {
+        showToast(`Maximum ${MAX_FILES} files reached`);
+        return null;
+    }
+    const file = {
+        id: generateFileId(),
+        name: name || 'Untitled.md',
+        content: content || '',
+        savedContent: content || ''
+    };
+    files.push(file);
+    if (activate) switchToFile(file.id);
+    renderTabs();
+    saveFilesToStorage();
+    return file;
+}
+
+function switchToFile(id) {
+    // Save current file content before switching
+    const current = getActiveFile();
+    if (current) {
+        current.content = editor.value;
+    }
+    activeFileId = id;
+    const file = getActiveFile();
+    if (file) {
+        editor.value = file.content;
+        renderPreview();
+        updateLineNumbers();
+        updateStatusBar();
+    }
+    renderTabs();
+    saveFilesToStorage();
+}
+
+function closeFile(id) {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+
+    const doClose = () => {
+        const idx = files.indexOf(file);
+        files.splice(idx, 1);
+
+        if (files.length === 0) {
+            // Always keep at least one file
+            createFile('Untitled.md', '');
+            return;
+        }
+
+        if (activeFileId === id) {
+            // Switch to nearest tab
+            const newIdx = Math.min(idx, files.length - 1);
+            switchToFile(files[newIdx].id);
+        }
+        renderTabs();
+        saveFilesToStorage();
+    };
+
+    if (isFileModified(file)) {
+        showModal(
+            'Unsaved Changes',
+            `"${file.name}" has unsaved changes. Close without saving?`,
+            [
+                { label: 'Cancel', cls: 'btn', action: closeModal },
+                { label: 'Close', cls: 'btn btn-danger', action: () => { closeModal(); doClose(); } }
+            ]
+        );
+    } else {
+        doClose();
+    }
+}
+
+function renameFile(id, newName) {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+    file.name = newName || 'Untitled.md';
+    renderTabs();
+    saveFilesToStorage();
+    showToast(`Renamed to "${file.name}"`);
+}
+
+function markFileSaved(id) {
+    const file = files.find(f => f.id === id);
+    if (file) {
+        file.savedContent = file.content;
+        renderTabs();
+        saveFilesToStorage();
+    }
+}
+
+/* ─── Tab UI ─────────────────────────────────────────────────── */
+const tabList = document.getElementById('tab-list');
+const tabScrollLeft = document.getElementById('tab-scroll-left');
+const tabScrollRight = document.getElementById('tab-scroll-right');
+
+function renderTabs() {
+    tabList.innerHTML = '';
+    files.forEach(file => {
+        const tab = document.createElement('div');
+        tab.className = 'tab' + (file.id === activeFileId ? ' active' : '') + (isFileModified(file) ? ' modified' : '');
+        tab.dataset.id = file.id;
+
+        const modified = document.createElement('span');
+        modified.className = 'tab-modified';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'tab-name';
+        nameSpan.textContent = file.name;
+        nameSpan.title = file.name;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'tab-close';
+        closeBtn.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l6 6M9 3l-6 6"/></svg>';
+        closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeFile(file.id);
+        });
+
+        tab.appendChild(modified);
+        tab.appendChild(nameSpan);
+        tab.appendChild(closeBtn);
+
+        // Click to switch
+        tab.addEventListener('click', () => {
+            if (file.id !== activeFileId) switchToFile(file.id);
+        });
+
+        // Double-click to rename
+        tab.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            startRenameTab(file.id, nameSpan);
+        });
+
+        tabList.appendChild(tab);
+    });
+
+    updateTabScrollButtons();
+
+    // Scroll active tab into view
+    requestAnimationFrame(() => {
+        const activeTab = tabList.querySelector('.tab.active');
+        if (activeTab) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+}
+
+function startRenameTab(id, nameSpan) {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'tab-rename-input';
+    input.value = file.name.replace(/\.md$/i, '');
+    nameSpan.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const finishRename = () => {
+        let newName = input.value.trim();
+        if (newName && !newName.toLowerCase().endsWith('.md')) {
+            newName += '.md';
+        }
+        if (!newName) newName = 'Untitled.md';
+        renameFile(id, newName);
+    };
+
+    input.addEventListener('blur', finishRename);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); input.value = file.name.replace(/\.md$/i, ''); input.blur(); }
+    });
+}
+
+function updateTabScrollButtons() {
+    const needsScroll = tabList.scrollWidth > tabList.clientWidth;
+    tabScrollLeft.classList.toggle('visible', needsScroll && tabList.scrollLeft > 0);
+    tabScrollRight.classList.toggle('visible', needsScroll && tabList.scrollLeft < tabList.scrollWidth - tabList.clientWidth - 1);
+}
+
+tabList.addEventListener('scroll', updateTabScrollButtons);
+window.addEventListener('resize', updateTabScrollButtons);
+tabScrollLeft.addEventListener('click', () => { tabList.scrollLeft -= 150; });
+tabScrollRight.addEventListener('click', () => { tabList.scrollLeft += 150; });
+document.getElementById('tab-new').addEventListener('click', () => { createFile('Untitled.md', ''); });
+
+/* ─── Auto-save ──────────────────────────────────────────────── */
 function autosave() {
     clearTimeout(autosaveTimeout);
     autosaveTimeout = setTimeout(() => {
-        localStorage.setItem(AUTOSAVE_KEY, editor.value);
+        const file = getActiveFile();
+        if (file) {
+            file.content = editor.value;
+            saveFilesToStorage();
+            renderTabs(); // update modified indicator
+        }
     }, 800);
 }
 
@@ -679,9 +894,7 @@ document.getElementById('file-open').addEventListener('change', function () {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = e => {
-        editor.value = e.target.result;
-        renderPreview();
-        updateStatusBar();
+        createFile(file.name, e.target.result);
         showToast(`Opened: ${file.name}`);
     };
     reader.readAsText(file);
@@ -712,9 +925,7 @@ editorWrap.addEventListener('drop', e => {
     }
     const reader = new FileReader();
     reader.onload = ev => {
-        editor.value = ev.target.result;
-        renderPreview();
-        updateStatusBar();
+        createFile(file.name, ev.target.result);
         showToast(`Opened: ${file.name}`);
     };
     reader.readAsText(file);
@@ -851,12 +1062,18 @@ document.querySelectorAll('.export-item').forEach(item => {
 
 function getExportFileName(defaultExt) {
     return new Promise((resolve) => {
-        const heading = preview.querySelector('h1, h2, h3, h4, h5, h6');
+        // Prefer active file name, then first heading, then fallback
+        const activeFile = getActiveFile();
         let defaultName = 'livemarkdown-document';
-        if (heading) {
-            const text = heading.textContent.trim().replace(/[/\\?%*:|"<>]/g, '');
-            const isHeadingTagMatch = /^[Hh][1-6]$/.test(text);
-            if (text && !isHeadingTagMatch) defaultName = text;
+        if (activeFile && activeFile.name && activeFile.name !== 'Untitled.md') {
+            defaultName = activeFile.name.replace(/\.md$/i, '');
+        } else {
+            const heading = preview.querySelector('h1, h2, h3, h4, h5, h6');
+            if (heading) {
+                const text = heading.textContent.trim().replace(/[/\\?%*:|"<>]/g, '');
+                const isHeadingTagMatch = /^[Hh][1-6]$/.test(text);
+                if (text && !isHeadingTagMatch) defaultName = text;
+            }
         }
 
         const container = document.createElement('div');
@@ -1170,14 +1387,18 @@ document.getElementById('btn-clear').addEventListener('click', () => {
         'This will delete all content in the editor. This action cannot be undone.',
         [
             { label: 'Cancel', cls: 'btn', action: closeModal },
-            { label: 'Clear', cls: 'btn btn-danger', action: () => { editor.value = ''; renderPreview(); closeModal(); showToast('Editor cleared'); } }
+            { label: 'Clear', cls: 'btn btn-danger', action: () => { editor.value = ''; const f = getActiveFile(); if (f) f.content = ''; renderPreview(); renderTabs(); saveFilesToStorage(); closeModal(); showToast('Editor cleared'); } }
         ]
     );
 });
 
 document.getElementById('btn-format').addEventListener('click', () => {
     editor.value = formatMarkdown(editor.value);
+    const f = getActiveFile();
+    if (f) f.content = editor.value;
     renderPreview();
+    renderTabs();
+    saveFilesToStorage();
     showToast('Markdown formatted');
 });
 
@@ -1188,12 +1409,16 @@ document.getElementById('btn-sample').addEventListener('click', () => {
             'Loading the sample will replace your current content. Continue?',
             [
                 { label: 'Cancel', cls: 'btn', action: closeModal },
-                { label: 'Load Sample', cls: 'btn btn-accent', action: () => { editor.value = SAMPLE; renderPreview(); closeModal(); showToast('Sample loaded'); } }
+                { label: 'Load Sample', cls: 'btn btn-accent', action: () => { editor.value = SAMPLE; const f = getActiveFile(); if (f) f.content = SAMPLE; renderPreview(); renderTabs(); saveFilesToStorage(); closeModal(); showToast('Sample loaded'); } }
             ]
         );
     } else {
         editor.value = SAMPLE;
+        const f = getActiveFile();
+        if (f) f.content = SAMPLE;
         renderPreview();
+        renderTabs();
+        saveFilesToStorage();
         showToast('Sample loaded');
     }
 });
@@ -1286,13 +1511,41 @@ if (toggleToolbarBtn && toolbarElement) {
 
 /* ─── Init ───────────────────────────────────────────────────── */
 (function init() {
-    const saved = localStorage.getItem(AUTOSAVE_KEY);
-    if (saved && saved.trim()) {
-        editor.value = saved;
-        showToast('Restored from auto-save');
+    // Restore files from storage
+    const savedFiles = localStorage.getItem(FILES_KEY);
+    const savedActiveId = localStorage.getItem(ACTIVE_FILE_KEY);
+
+    if (savedFiles) {
+        // Multi-file state exists
+        try {
+            files = JSON.parse(savedFiles);
+            if (files.length > 0) {
+                activeFileId = savedActiveId && files.some(f => f.id === savedActiveId)
+                    ? savedActiveId
+                    : files[0].id;
+                const file = getActiveFile();
+                if (file) editor.value = file.content;
+            } else {
+                createFile('Untitled.md', SAMPLE, true);
+            }
+        } catch (e) {
+            files = [];
+            createFile('Untitled.md', SAMPLE, true);
+        }
     } else {
-        editor.value = SAMPLE;
+        // Migrate from legacy single-file autosave or first visit
+        const legacySave = localStorage.getItem(AUTOSAVE_KEY);
+        if (legacySave && legacySave.trim()) {
+            createFile('Untitled.md', legacySave, true);
+            localStorage.removeItem(AUTOSAVE_KEY); // clean up legacy
+            showToast('Migrated from auto-save');
+        } else {
+            createFile('Untitled.md', SAMPLE, true);
+        }
     }
+
+    renderTabs();
+
     // Restore Theme
     const savedTheme = localStorage.getItem('livemark_theme');
     if (savedTheme && (savedTheme === 'dark' || savedTheme === 'light')) {
