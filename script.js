@@ -851,11 +851,12 @@ document.querySelectorAll('.export-item').forEach(item => {
 
 function getExportFileName(defaultExt) {
     return new Promise((resolve) => {
-        const h1 = preview.querySelector('h1');
+        const heading = preview.querySelector('h1, h2, h3, h4, h5, h6');
         let defaultName = 'livemarkdown-document';
-        if (h1) {
-            const text = h1.textContent.trim().replace(/[/\\?%*:|"<>]/g, '');
-            if (text) defaultName = text;
+        if (heading) {
+            const text = heading.textContent.trim().replace(/[/\\?%*:|"<>]/g, '');
+            const isHeadingTagMatch = /^[Hh][1-6]$/.test(text);
+            if (text && !isHeadingTagMatch) defaultName = text;
         }
 
         const container = document.createElement('div');
