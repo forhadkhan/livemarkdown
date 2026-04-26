@@ -219,7 +219,7 @@ function updateTabScrollButtons() {
 }
 
 tabList.addEventListener('scroll', updateTabScrollButtons);
-window.addEventListener('resize', updateTabScrollButtons);
+window.addEventListener('resize', () => { updateTabScrollButtons(); invalidateLineTopCache(); });
 tabScrollLeft.addEventListener('click', () => { tabList.scrollLeft -= 150; });
 tabScrollRight.addEventListener('click', () => { tabList.scrollLeft += 150; });
 document.getElementById('tab-new').addEventListener('click', () => { createFile('Untitled.md', ''); });
@@ -269,6 +269,54 @@ function escHtml(str) {
 
 /* ─── Render ─────────────────────────────────────────────────── */
 let renderTimeout;
+let sourceLineMap = []; // Array of original source line numbers, one per preview block
+
+/**
+ * Build a map from preview top-level element index → original source line number.
+ * Uses marked.lexer() on the original markdown to get token positions.
+ */
+function buildSourceLineMap(originalMd) {
+    let tokens;
+    try { tokens = marked.lexer(originalMd); } catch { return []; }
+
+    const map = [];
+    let charOffset = 0;
+    // Pre-count line start offsets for fast lookup
+    const lineStarts = [0];
+    for (let i = 0; i < originalMd.length; i++) {
+        if (originalMd[i] === '\n') lineStarts.push(i + 1);
+    }
+
+    function charToLine(offset) {
+        let lo = 0, hi = lineStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= offset) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+    }
+
+    for (const token of tokens) {
+        if (token.type === 'space') {
+            charOffset += token.raw.length;
+            continue;
+        }
+        map.push(charToLine(charOffset));
+        charOffset += token.raw.length;
+    }
+    return map;
+}
+
+/**
+ * Tag top-level preview children with data-source-line attributes.
+ */
+function tagPreviewSourceLines() {
+    const children = Array.from(preview.children);
+    for (let i = 0; i < children.length && i < sourceLineMap.length; i++) {
+        children[i].setAttribute('data-source-line', sourceLineMap[i]);
+    }
+}
+
 /**
  * Orchestrates the rendering process: pre-processing math, 
  * parsing Markdown via Marked, restoring math via KaTeX, 
@@ -277,7 +325,11 @@ let renderTimeout;
 async function renderPreview() {
     clearTimeout(renderTimeout);
     renderTimeout = setTimeout(async () => {
-        let md = editor.value;
+        const originalMd = editor.value;
+        let md = originalMd;
+
+        // Build source line map from original text
+        sourceLineMap = buildSourceLineMap(originalMd);
 
         // Pre-process: protect math blocks before marked parses
         const mathBlocks = [];
@@ -313,6 +365,9 @@ async function renderPreview() {
         });
 
         preview.innerHTML = html;
+
+        // Tag preview elements with source line numbers
+        tagPreviewSourceLines();
 
         // Make all links open in a new tab
         preview.querySelectorAll('a').forEach(a => {
@@ -378,8 +433,9 @@ editor.addEventListener('keyup', updateCursorPos);
 editor.addEventListener('click', updateCursorPos);
 
 
-/* ─── Sync Scroll ────────────────────────────────────────────── */
+/* ─── Sync Scroll (Source-line based) ────────────────────────── */
 editor.addEventListener('input', () => {
+    invalidateLineTopCache();
     updateLineNumbers();
     updateStatusBar();
     autosave();
@@ -389,21 +445,198 @@ editor.addEventListener('input', () => {
     }
 });
 
-editor.addEventListener('scroll', () => {
-    lineNums.scrollTop = editor.scrollTop;
+/**
+ * Get the Y offset of a given source line number in the editor textarea.
+ * Uses a hidden mirror div to measure wrapped-line positions.
+ * Results are cached and invalidated on input.
+ */
+let _lineTopCache = new Map();
+let _lineTopCacheVersion = 0;
+
+function invalidateLineTopCache() {
+    _lineTopCacheVersion++;
+    _lineTopCache.clear();
+}
+
+function getEditorLineTop(lineNum) {
+    if (_lineTopCache.has(lineNum)) return _lineTopCache.get(lineNum);
+
+    const lines = editor.value.split('\n');
+    if (lineNum >= lines.length) lineNum = lines.length - 1;
+    if (lineNum < 0) lineNum = 0;
+
+    // Build text up to the target line
+    const textBefore = lines.slice(0, lineNum).join('\n');
+
+    // Use a temporary mirror element with the same styling
+    let mirror = document.getElementById('_sync-mirror');
+    if (!mirror) {
+        mirror = document.createElement('div');
+        mirror.id = '_sync-mirror';
+        mirror.setAttribute('aria-hidden', 'true');
+        mirror.style.cssText = `
+            position: absolute; top: 0; left: 0; visibility: hidden;
+            pointer-events: none; overflow: hidden; z-index: -1;
+            white-space: pre-wrap; word-wrap: break-word;
+        `;
+        editor.parentElement.appendChild(mirror);
+    }
+
+    // Copy editor computed styles to the mirror
+    const cs = getComputedStyle(editor);
+    mirror.style.width = cs.width;
+    mirror.style.font = cs.font;
+    mirror.style.letterSpacing = cs.letterSpacing;
+    mirror.style.tabSize = cs.tabSize;
+    mirror.style.padding = cs.padding;
+    mirror.style.borderWidth = cs.borderWidth;
+    mirror.style.boxSizing = cs.boxSizing;
+
+    // Set text content up to the target line, add a marker span
+    mirror.innerHTML = '';
+    const pre = document.createTextNode(textBefore + '\n');
+    const marker = document.createElement('span');
+    marker.textContent = '\u200b'; // zero-width space
+    mirror.appendChild(pre);
+    mirror.appendChild(marker);
+
+    const result = marker.offsetTop;
+    _lineTopCache.set(lineNum, result);
+    return result;
+}
+
+/**
+ * Get the source line number currently at the top of the editor viewport.
+ */
+function getEditorTopSourceLine() {
+    const scrollTop = editor.scrollTop;
+    const lines = editor.value.split('\n');
+    const totalLines = lines.length;
+
+    // Binary search for the line whose top is closest to scrollTop
+    let lo = 0, hi = totalLines - 1;
+    while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (getEditorLineTop(mid) <= scrollTop) lo = mid; else hi = mid - 1;
+    }
+
+    // Interpolate fractional line for smooth scrolling
+    const lineTop = getEditorLineTop(lo);
+    const nextTop = lo + 1 < totalLines ? getEditorLineTop(lo + 1) : lineTop + 20;
+    const lineHeight = nextTop - lineTop || 1;
+    const fraction = (scrollTop - lineTop) / lineHeight;
+
+    return lo + Math.min(fraction, 1);
+}
+
+/**
+ * Sync editor scroll → preview scroll using source line anchors.
+ */
+function syncEditorToPreview() {
     if (!syncEnabled || isSyncing) return;
     isSyncing = true;
-    const ratio = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
-    previewScroll.scrollTop = ratio * (previewScroll.scrollHeight - previewScroll.clientHeight);
+
+    const anchors = Array.from(preview.querySelectorAll('[data-source-line]'));
+    if (anchors.length === 0) {
+        // Fallback: proportional
+        const ratio = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
+        previewScroll.scrollTop = ratio * (previewScroll.scrollHeight - previewScroll.clientHeight);
+        setTimeout(() => isSyncing = false, 50);
+        return;
+    }
+
+    const topLine = getEditorTopSourceLine();
+    const totalLines = editor.value.split('\n').length;
+
+    // Build anchor list: { line, top }
+    const pts = anchors.map(el => ({
+        line: parseInt(el.dataset.sourceLine, 10),
+        top: el.offsetTop
+    }));
+
+    // Add virtual end anchor
+    pts.push({ line: totalLines, top: previewScroll.scrollHeight });
+
+    // Find the two anchors that bracket topLine
+    let lower = null, upper = null;
+    for (const pt of pts) {
+        if (pt.line <= topLine) lower = pt;
+        if (pt.line > topLine && !upper) upper = pt;
+    }
+
+    let targetScroll = 0;
+    if (!lower && upper) {
+        targetScroll = (topLine / upper.line) * upper.top;
+    } else if (lower && !upper) {
+        targetScroll = lower.top;
+    } else if (lower && upper) {
+        const span = upper.line - lower.line || 1;
+        const progress = (topLine - lower.line) / span;
+        targetScroll = lower.top + (upper.top - lower.top) * progress;
+    }
+
+    previewScroll.scrollTop = targetScroll;
     setTimeout(() => isSyncing = false, 50);
+}
+
+/**
+ * Sync preview scroll → editor scroll using source line anchors.
+ */
+function syncPreviewToEditor() {
+    if (!syncEnabled || isSyncing) return;
+    isSyncing = true;
+
+    const anchors = Array.from(preview.querySelectorAll('[data-source-line]'));
+    if (anchors.length === 0) {
+        // Fallback: proportional
+        const ratio = previewScroll.scrollTop / (previewScroll.scrollHeight - previewScroll.clientHeight || 1);
+        editor.scrollTop = ratio * (editor.scrollHeight - editor.clientHeight);
+        lineNums.scrollTop = editor.scrollTop;
+        setTimeout(() => isSyncing = false, 50);
+        return;
+    }
+
+    const scrollTop = previewScroll.scrollTop;
+    const totalLines = editor.value.split('\n').length;
+
+    // Build anchor list: { line, top }
+    const pts = anchors.map(el => ({
+        line: parseInt(el.dataset.sourceLine, 10),
+        top: el.offsetTop
+    }));
+    pts.push({ line: totalLines, top: previewScroll.scrollHeight });
+
+    // Find two anchors that bracket the current preview scroll
+    let lower = null, upper = null;
+    for (const pt of pts) {
+        if (pt.top <= scrollTop) lower = pt;
+        if (pt.top > scrollTop && !upper) upper = pt;
+    }
+
+    let targetLine = 0;
+    if (!lower && upper) {
+        targetLine = (scrollTop / upper.top) * upper.line;
+    } else if (lower && !upper) {
+        targetLine = lower.line;
+    } else if (lower && upper) {
+        const span = upper.top - lower.top || 1;
+        const progress = (scrollTop - lower.top) / span;
+        targetLine = lower.line + (upper.line - lower.line) * progress;
+    }
+
+    // Scroll editor to the computed source line
+    editor.scrollTop = getEditorLineTop(Math.floor(targetLine));
+    lineNums.scrollTop = editor.scrollTop;
+    setTimeout(() => isSyncing = false, 50);
+}
+
+editor.addEventListener('scroll', () => {
+    lineNums.scrollTop = editor.scrollTop;
+    syncEditorToPreview();
 });
 
 previewScroll.addEventListener('scroll', () => {
-    if (!syncEnabled || isSyncing) return;
-    isSyncing = true;
-    const ratio = previewScroll.scrollTop / (previewScroll.scrollHeight - previewScroll.clientHeight || 1);
-    editor.scrollTop = ratio * (editor.scrollHeight - editor.clientHeight);
-    setTimeout(() => isSyncing = false, 50);
+    syncPreviewToEditor();
 });
 
 document.getElementById('sync-btn').addEventListener('click', function () {
