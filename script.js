@@ -11,14 +11,229 @@ let isFlipped = false;
 let fsMode = null; // null | 'editor' | 'preview'
 let spellCheckEnabled = false;
 
-/* ─── Auto-save ──────────────────────────────────────────────── */
-const AUTOSAVE_KEY = 'livemark_autosave';
+/* ─── File Manager ───────────────────────────────────────────── */
+const FILES_KEY = 'livemark_files';
+const ACTIVE_FILE_KEY = 'livemark_active_file';
+const AUTOSAVE_KEY = 'livemark_autosave'; // legacy key for migration
+const MAX_FILES = 50;
+
+let files = [];        // Array of { id, name, content, savedContent }
+let activeFileId = null;
 let autosaveTimeout;
 
+function generateFileId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function getActiveFile() {
+    return files.find(f => f.id === activeFileId) || null;
+}
+
+function saveFilesToStorage() {
+    localStorage.setItem(FILES_KEY, JSON.stringify(files));
+    localStorage.setItem(ACTIVE_FILE_KEY, activeFileId);
+}
+
+function isFileModified(file) {
+    return file.content !== file.savedContent;
+}
+
+function createFile(name, content, activate = true) {
+    if (files.length >= MAX_FILES) {
+        showToast(`Maximum ${MAX_FILES} files reached`);
+        return null;
+    }
+    const file = {
+        id: generateFileId(),
+        name: name || 'Untitled.md',
+        content: content || '',
+        savedContent: content || ''
+    };
+    files.push(file);
+    if (activate) switchToFile(file.id);
+    renderTabs();
+    saveFilesToStorage();
+    return file;
+}
+
+function switchToFile(id) {
+    // Save current file content before switching
+    const current = getActiveFile();
+    if (current) {
+        current.content = editor.value;
+    }
+    activeFileId = id;
+    const file = getActiveFile();
+    if (file) {
+        editor.value = file.content;
+        renderPreview();
+        updateLineNumbers();
+        updateStatusBar();
+    }
+    renderTabs();
+    saveFilesToStorage();
+}
+
+function closeFile(id) {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+
+    const doClose = () => {
+        const idx = files.indexOf(file);
+        files.splice(idx, 1);
+
+        if (files.length === 0) {
+            // Always keep at least one file
+            createFile('Untitled.md', '');
+            return;
+        }
+
+        if (activeFileId === id) {
+            // Switch to nearest tab
+            const newIdx = Math.min(idx, files.length - 1);
+            switchToFile(files[newIdx].id);
+        }
+        renderTabs();
+        saveFilesToStorage();
+    };
+
+    if (isFileModified(file)) {
+        showModal(
+            'Unsaved Changes',
+            `"${file.name}" has unsaved changes. Close without saving?`,
+            [
+                { label: 'Cancel', cls: 'btn', action: closeModal },
+                { label: 'Close', cls: 'btn btn-danger', action: () => { closeModal(); doClose(); } }
+            ]
+        );
+    } else {
+        doClose();
+    }
+}
+
+function renameFile(id, newName) {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+    file.name = newName || 'Untitled.md';
+    renderTabs();
+    saveFilesToStorage();
+    showToast(`Renamed to "${file.name}"`);
+}
+
+function markFileSaved(id) {
+    const file = files.find(f => f.id === id);
+    if (file) {
+        file.savedContent = file.content;
+        renderTabs();
+        saveFilesToStorage();
+    }
+}
+
+/* ─── Tab UI ─────────────────────────────────────────────────── */
+const tabList = document.getElementById('tab-list');
+const tabScrollLeft = document.getElementById('tab-scroll-left');
+const tabScrollRight = document.getElementById('tab-scroll-right');
+
+function renderTabs() {
+    tabList.innerHTML = '';
+    files.forEach(file => {
+        const tab = document.createElement('div');
+        tab.className = 'tab' + (file.id === activeFileId ? ' active' : '') + (isFileModified(file) ? ' modified' : '');
+        tab.dataset.id = file.id;
+
+        const modified = document.createElement('span');
+        modified.className = 'tab-modified';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'tab-name';
+        nameSpan.textContent = file.name;
+        nameSpan.title = file.name;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'tab-close';
+        closeBtn.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l6 6M9 3l-6 6"/></svg>';
+        closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeFile(file.id);
+        });
+
+        tab.appendChild(modified);
+        tab.appendChild(nameSpan);
+        tab.appendChild(closeBtn);
+
+        // Click to switch
+        tab.addEventListener('click', () => {
+            if (file.id !== activeFileId) switchToFile(file.id);
+        });
+
+        // Double-click to rename
+        tab.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            startRenameTab(file.id, nameSpan);
+        });
+
+        tabList.appendChild(tab);
+    });
+
+    updateTabScrollButtons();
+
+    // Scroll active tab into view
+    requestAnimationFrame(() => {
+        const activeTab = tabList.querySelector('.tab.active');
+        if (activeTab) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+}
+
+function startRenameTab(id, nameSpan) {
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'tab-rename-input';
+    input.value = file.name.replace(/\.md$/i, '');
+    nameSpan.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const finishRename = () => {
+        let newName = input.value.trim();
+        if (newName && !newName.toLowerCase().endsWith('.md')) {
+            newName += '.md';
+        }
+        if (!newName) newName = 'Untitled.md';
+        renameFile(id, newName);
+    };
+
+    input.addEventListener('blur', finishRename);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); input.value = file.name.replace(/\.md$/i, ''); input.blur(); }
+    });
+}
+
+function updateTabScrollButtons() {
+    const needsScroll = tabList.scrollWidth > tabList.clientWidth;
+    tabScrollLeft.classList.toggle('visible', needsScroll && tabList.scrollLeft > 0);
+    tabScrollRight.classList.toggle('visible', needsScroll && tabList.scrollLeft < tabList.scrollWidth - tabList.clientWidth - 1);
+}
+
+tabList.addEventListener('scroll', updateTabScrollButtons);
+window.addEventListener('resize', () => { updateTabScrollButtons(); invalidateLineTopCache(); });
+tabScrollLeft.addEventListener('click', () => { tabList.scrollLeft -= 150; });
+tabScrollRight.addEventListener('click', () => { tabList.scrollLeft += 150; });
+document.getElementById('tab-new').addEventListener('click', () => { createFile('Untitled.md', ''); });
+
+/* ─── Auto-save ──────────────────────────────────────────────── */
 function autosave() {
     clearTimeout(autosaveTimeout);
     autosaveTimeout = setTimeout(() => {
-        localStorage.setItem(AUTOSAVE_KEY, editor.value);
+        const file = getActiveFile();
+        if (file) {
+            file.content = editor.value;
+            saveFilesToStorage();
+            renderTabs(); // update modified indicator
+        }
     }, 800);
 }
 
@@ -54,6 +269,54 @@ function escHtml(str) {
 
 /* ─── Render ─────────────────────────────────────────────────── */
 let renderTimeout;
+let sourceLineMap = []; // Array of original source line numbers, one per preview block
+
+/**
+ * Build a map from preview top-level element index → original source line number.
+ * Uses marked.lexer() on the original markdown to get token positions.
+ */
+function buildSourceLineMap(originalMd) {
+    let tokens;
+    try { tokens = marked.lexer(originalMd); } catch { return []; }
+
+    const map = [];
+    let charOffset = 0;
+    // Pre-count line start offsets for fast lookup
+    const lineStarts = [0];
+    for (let i = 0; i < originalMd.length; i++) {
+        if (originalMd[i] === '\n') lineStarts.push(i + 1);
+    }
+
+    function charToLine(offset) {
+        let lo = 0, hi = lineStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= offset) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+    }
+
+    for (const token of tokens) {
+        if (token.type === 'space') {
+            charOffset += token.raw.length;
+            continue;
+        }
+        map.push(charToLine(charOffset));
+        charOffset += token.raw.length;
+    }
+    return map;
+}
+
+/**
+ * Tag top-level preview children with data-source-line attributes.
+ */
+function tagPreviewSourceLines() {
+    const children = Array.from(preview.children);
+    for (let i = 0; i < children.length && i < sourceLineMap.length; i++) {
+        children[i].setAttribute('data-source-line', sourceLineMap[i]);
+    }
+}
+
 /**
  * Orchestrates the rendering process: pre-processing math, 
  * parsing Markdown via Marked, restoring math via KaTeX, 
@@ -62,7 +325,11 @@ let renderTimeout;
 async function renderPreview() {
     clearTimeout(renderTimeout);
     renderTimeout = setTimeout(async () => {
-        let md = editor.value;
+        const originalMd = editor.value;
+        let md = originalMd;
+
+        // Build source line map from original text
+        sourceLineMap = buildSourceLineMap(originalMd);
 
         // Pre-process: protect math blocks before marked parses
         const mathBlocks = [];
@@ -98,6 +365,15 @@ async function renderPreview() {
         });
 
         preview.innerHTML = html;
+
+        // Tag preview elements with source line numbers
+        tagPreviewSourceLines();
+
+        // Make all links open in a new tab
+        preview.querySelectorAll('a').forEach(a => {
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
+        });
 
         // Run mermaid
         const mermaidEls = preview.querySelectorAll('.mermaid');
@@ -157,8 +433,9 @@ editor.addEventListener('keyup', updateCursorPos);
 editor.addEventListener('click', updateCursorPos);
 
 
-/* ─── Sync Scroll ────────────────────────────────────────────── */
+/* ─── Sync Scroll (Source-line based) ────────────────────────── */
 editor.addEventListener('input', () => {
+    invalidateLineTopCache();
     updateLineNumbers();
     updateStatusBar();
     autosave();
@@ -168,26 +445,204 @@ editor.addEventListener('input', () => {
     }
 });
 
-editor.addEventListener('scroll', () => {
-    lineNums.scrollTop = editor.scrollTop;
+/**
+ * Get the Y offset of a given source line number in the editor textarea.
+ * Uses a hidden mirror div to measure wrapped-line positions.
+ * Results are cached and invalidated on input.
+ */
+let _lineTopCache = new Map();
+let _lineTopCacheVersion = 0;
+
+function invalidateLineTopCache() {
+    _lineTopCacheVersion++;
+    _lineTopCache.clear();
+}
+
+function getEditorLineTop(lineNum) {
+    if (_lineTopCache.has(lineNum)) return _lineTopCache.get(lineNum);
+
+    const lines = editor.value.split('\n');
+    if (lineNum >= lines.length) lineNum = lines.length - 1;
+    if (lineNum < 0) lineNum = 0;
+
+    // Build text up to the target line
+    const textBefore = lines.slice(0, lineNum).join('\n');
+
+    // Use a temporary mirror element with the same styling
+    let mirror = document.getElementById('_sync-mirror');
+    if (!mirror) {
+        mirror = document.createElement('div');
+        mirror.id = '_sync-mirror';
+        mirror.setAttribute('aria-hidden', 'true');
+        mirror.style.cssText = `
+            position: absolute; top: 0; left: 0; visibility: hidden;
+            pointer-events: none; overflow: hidden; z-index: -1;
+            white-space: pre-wrap; word-wrap: break-word;
+        `;
+        editor.parentElement.appendChild(mirror);
+    }
+
+    // Copy editor computed styles to the mirror
+    const cs = getComputedStyle(editor);
+    mirror.style.width = cs.width;
+    mirror.style.font = cs.font;
+    mirror.style.letterSpacing = cs.letterSpacing;
+    mirror.style.tabSize = cs.tabSize;
+    mirror.style.padding = cs.padding;
+    mirror.style.borderWidth = cs.borderWidth;
+    mirror.style.boxSizing = cs.boxSizing;
+
+    // Set text content up to the target line, add a marker span
+    mirror.innerHTML = '';
+    const pre = document.createTextNode(textBefore + '\n');
+    const marker = document.createElement('span');
+    marker.textContent = '\u200b'; // zero-width space
+    mirror.appendChild(pre);
+    mirror.appendChild(marker);
+
+    const result = marker.offsetTop;
+    _lineTopCache.set(lineNum, result);
+    return result;
+}
+
+/**
+ * Get the source line number currently at the top of the editor viewport.
+ */
+function getEditorTopSourceLine() {
+    const scrollTop = editor.scrollTop;
+    const lines = editor.value.split('\n');
+    const totalLines = lines.length;
+
+    // Binary search for the line whose top is closest to scrollTop
+    let lo = 0, hi = totalLines - 1;
+    while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (getEditorLineTop(mid) <= scrollTop) lo = mid; else hi = mid - 1;
+    }
+
+    // Interpolate fractional line for smooth scrolling
+    const lineTop = getEditorLineTop(lo);
+    const nextTop = lo + 1 < totalLines ? getEditorLineTop(lo + 1) : lineTop + 20;
+    const lineHeight = nextTop - lineTop || 1;
+    const fraction = (scrollTop - lineTop) / lineHeight;
+
+    return lo + Math.min(fraction, 1);
+}
+
+/**
+ * Sync editor scroll → preview scroll using source line anchors.
+ */
+function syncEditorToPreview() {
     if (!syncEnabled || isSyncing) return;
     isSyncing = true;
-    const ratio = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
-    previewScroll.scrollTop = ratio * (previewScroll.scrollHeight - previewScroll.clientHeight);
+
+    const anchors = Array.from(preview.querySelectorAll('[data-source-line]'));
+    if (anchors.length === 0) {
+        // Fallback: proportional
+        const ratio = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
+        previewScroll.scrollTop = ratio * (previewScroll.scrollHeight - previewScroll.clientHeight);
+        setTimeout(() => isSyncing = false, 50);
+        return;
+    }
+
+    const topLine = getEditorTopSourceLine();
+    const totalLines = editor.value.split('\n').length;
+
+    // Build anchor list: { line, top }
+    const pts = anchors.map(el => ({
+        line: parseInt(el.dataset.sourceLine, 10),
+        top: el.offsetTop
+    }));
+
+    // Add virtual end anchor
+    pts.push({ line: totalLines, top: previewScroll.scrollHeight });
+
+    // Find the two anchors that bracket topLine
+    let lower = null, upper = null;
+    for (const pt of pts) {
+        if (pt.line <= topLine) lower = pt;
+        if (pt.line > topLine && !upper) upper = pt;
+    }
+
+    let targetScroll = 0;
+    if (!lower && upper) {
+        targetScroll = (topLine / upper.line) * upper.top;
+    } else if (lower && !upper) {
+        targetScroll = lower.top;
+    } else if (lower && upper) {
+        const span = upper.line - lower.line || 1;
+        const progress = (topLine - lower.line) / span;
+        targetScroll = lower.top + (upper.top - lower.top) * progress;
+    }
+
+    previewScroll.scrollTop = targetScroll;
     setTimeout(() => isSyncing = false, 50);
+}
+
+/**
+ * Sync preview scroll → editor scroll using source line anchors.
+ */
+function syncPreviewToEditor() {
+    if (!syncEnabled || isSyncing) return;
+    isSyncing = true;
+
+    const anchors = Array.from(preview.querySelectorAll('[data-source-line]'));
+    if (anchors.length === 0) {
+        // Fallback: proportional
+        const ratio = previewScroll.scrollTop / (previewScroll.scrollHeight - previewScroll.clientHeight || 1);
+        editor.scrollTop = ratio * (editor.scrollHeight - editor.clientHeight);
+        lineNums.scrollTop = editor.scrollTop;
+        setTimeout(() => isSyncing = false, 50);
+        return;
+    }
+
+    const scrollTop = previewScroll.scrollTop;
+    const totalLines = editor.value.split('\n').length;
+
+    // Build anchor list: { line, top }
+    const pts = anchors.map(el => ({
+        line: parseInt(el.dataset.sourceLine, 10),
+        top: el.offsetTop
+    }));
+    pts.push({ line: totalLines, top: previewScroll.scrollHeight });
+
+    // Find two anchors that bracket the current preview scroll
+    let lower = null, upper = null;
+    for (const pt of pts) {
+        if (pt.top <= scrollTop) lower = pt;
+        if (pt.top > scrollTop && !upper) upper = pt;
+    }
+
+    let targetLine = 0;
+    if (!lower && upper) {
+        targetLine = (scrollTop / upper.top) * upper.line;
+    } else if (lower && !upper) {
+        targetLine = lower.line;
+    } else if (lower && upper) {
+        const span = upper.top - lower.top || 1;
+        const progress = (scrollTop - lower.top) / span;
+        targetLine = lower.line + (upper.line - lower.line) * progress;
+    }
+
+    // Scroll editor to the computed source line
+    editor.scrollTop = getEditorLineTop(Math.floor(targetLine));
+    lineNums.scrollTop = editor.scrollTop;
+    setTimeout(() => isSyncing = false, 50);
+}
+
+editor.addEventListener('scroll', () => {
+    lineNums.scrollTop = editor.scrollTop;
+    syncEditorToPreview();
 });
 
 previewScroll.addEventListener('scroll', () => {
-    if (!syncEnabled || isSyncing) return;
-    isSyncing = true;
-    const ratio = previewScroll.scrollTop / (previewScroll.scrollHeight - previewScroll.clientHeight || 1);
-    editor.scrollTop = ratio * (editor.scrollHeight - editor.clientHeight);
-    setTimeout(() => isSyncing = false, 50);
+    syncPreviewToEditor();
 });
 
 document.getElementById('sync-btn').addEventListener('click', function () {
     syncEnabled = !syncEnabled;
     this.classList.toggle('active', syncEnabled);
+    localStorage.setItem('livemark_sync_enabled', syncEnabled);
     showToast(syncEnabled ? 'Sync scroll ON' : 'Sync scroll OFF');
 });
 
@@ -575,6 +1030,8 @@ function setLayout(type, flip) {
     main.classList.add('layout-' + type);
     if (flip) main.classList.add('flipped');
     currentLayout = type; isFlipped = !!flip;
+    localStorage.setItem('livemark_layout', type);
+    localStorage.setItem('livemark_flipped', flip);
     // Update mermaid (needs rerender after layout change)
     renderPreview();
 }
@@ -638,6 +1095,24 @@ document.addEventListener('keydown', e => {
         e.preventDefault();
         toggleFind();
     }
+    if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const active = getActiveFile();
+        if (active) {
+            active.content = editor.value;
+            markFileSaved(activeFileId);
+            showToast(`Saved "${active.name}"`);
+        }
+    }
+    if (e.key === 'n' && e.altKey) {
+        e.preventDefault();
+        createFile('Untitled.md', '');
+        showToast('Created new file');
+    }
+    if (e.key === 'w' && e.altKey) {
+        e.preventDefault();
+        closeFile(activeFileId);
+    }
     if (e.key === 'Escape') {
         if (fsMode) {
             document.body.classList.remove('fullscreen-editor', 'fullscreen-preview');
@@ -660,6 +1135,7 @@ document.getElementById('theme-btn').addEventListener('click', () => {
     // mermaid re-theme
     mermaid.initialize({ startOnLoad: false, theme: currentTheme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
     renderPreview();
+    localStorage.setItem('livemark_theme', currentTheme);
     showToast(currentTheme === 'dark' ? '🌙 Dark mode' : '☀️ Light mode');
 });
 
@@ -669,9 +1145,7 @@ document.getElementById('file-open').addEventListener('change', function () {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = e => {
-        editor.value = e.target.result;
-        renderPreview();
-        updateStatusBar();
+        createFile(file.name, e.target.result);
         showToast(`Opened: ${file.name}`);
     };
     reader.readAsText(file);
@@ -702,9 +1176,7 @@ editorWrap.addEventListener('drop', e => {
     }
     const reader = new FileReader();
     reader.onload = ev => {
-        editor.value = ev.target.result;
-        renderPreview();
-        updateStatusBar();
+        createFile(file.name, ev.target.result);
         showToast(`Opened: ${file.name}`);
     };
     reader.readAsText(file);
@@ -719,14 +1191,18 @@ document.getElementById('spellcheck-btn').addEventListener('click', function () 
     editor.focus();
     this.textContent = `Spell: ${spellCheckEnabled ? 'ON' : 'OFF'}`;
     this.classList.toggle('active', spellCheckEnabled);
+    localStorage.setItem('livemark_spell_check_enabled', spellCheckEnabled);
     showToast(`Spell check ${spellCheckEnabled ? 'enabled' : 'disabled'}`);
 });
 
 /* ─── Keyboard Shortcuts Panel ───────────────────────────────── */
 const SHORTCUTS = [
+    { section: 'Files' },
+    { key: 'Ctrl + S', desc: 'Save file (removes modified dot)' },
+    { key: 'Alt + N', desc: 'New file' },
+    { key: 'Alt + W', desc: 'Close active file' },
     { section: 'Editor' },
     { key: 'Ctrl + F', desc: 'Find & replace' },
-    { key: 'Ctrl + S', desc: 'No-op (auto-saved)' },
     { key: 'Tab', desc: 'Indent 2 spaces' },
     { key: 'Escape', desc: 'Close find bar / exit fullscreen' },
     { section: 'Format' },
@@ -737,7 +1213,6 @@ const SHORTCUTS = [
     { key: 'Toolbar: H1–3', desc: 'Heading levels' },
     { section: 'Navigation' },
     { key: '?', desc: 'Open this shortcuts panel' },
-    { key: 'Ctrl + F', desc: 'Open find & replace' },
     { section: 'View' },
     { key: 'Fullscreen ⛶', desc: 'Toggle editor or preview fullscreen' },
     { key: 'Escape', desc: 'Exit fullscreen' },
@@ -797,12 +1272,14 @@ const fontFamilyMap = {
 
 document.getElementById('preview-font-select').addEventListener('change', function () {
     document.getElementById('preview').style.fontFamily = fontFamilyMap[this.value];
+    localStorage.setItem('livemark_font_family', this.value);
 });
 
 document.getElementById('preview-font-size').addEventListener('input', function () {
     const size = parseInt(this.value);
     document.getElementById('preview').style.fontSize = size + 'px';
     document.getElementById('preview-font-size-label').textContent = size + 'px';
+    localStorage.setItem('livemark_font_size', this.value);
 });
 
 /* ─── Dropdowns ──────────────────────────────────────────────── */
@@ -836,38 +1313,315 @@ document.querySelectorAll('.export-item').forEach(item => {
     });
 });
 
-function exportMd() {
+function getExportFileName(defaultExt) {
+    return new Promise((resolve) => {
+        // Prefer active file name, then first heading, then fallback
+        const activeFile = getActiveFile();
+        let defaultName = 'livemarkdown-document';
+        if (activeFile && activeFile.name && activeFile.name !== 'Untitled.md') {
+            defaultName = activeFile.name.replace(/\.md$/i, '');
+        } else {
+            const heading = preview.querySelector('h1, h2, h3, h4, h5, h6');
+            if (heading) {
+                const text = heading.textContent.trim().replace(/[/\\?%*:|"<>]/g, '');
+                const isHeadingTagMatch = /^[Hh][1-6]$/.test(text);
+                if (text && !isHeadingTagMatch) defaultName = text;
+            }
+        }
+
+        const container = document.createElement('div');
+        const label = document.createElement('label');
+        label.textContent = 'Enter filename:';
+        label.style.color = 'var(--text-muted)';
+        label.style.fontSize = '12px';
+        
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = defaultName;
+        input.className = 'modal-input';
+        
+        container.appendChild(label);
+        container.appendChild(input);
+
+        const actions = [
+            {
+                label: 'Cancel',
+                cls: 'btn',
+                action: () => {
+                    closeModal();
+                    resolve(null);
+                }
+            },
+            {
+                label: 'Export',
+                cls: 'btn btn-accent',
+                action: () => {
+                    let cleanName = input.value.trim().replace(/[/\\?%*:|"<>]/g, '');
+                    if (!cleanName) cleanName = 'livemarkdown-document';
+                    
+                    if (!cleanName.toLowerCase().endsWith('.' + defaultExt.toLowerCase())) {
+                        cleanName += '.' + defaultExt;
+                    }
+                    closeModal();
+                    resolve(cleanName);
+                }
+            }
+        ];
+
+        showModal(`Export as .${defaultExt.toUpperCase()}`, container, actions);
+        
+        setTimeout(() => {
+            input.focus();
+            input.select();
+        }, 100);
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                actions[1].action();
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                actions[0].action();
+            }
+        });
+    });
+}
+
+async function exportMd() {
+    const filename = await getExportFileName('md');
+    if (!filename) return;
     const blob = new Blob([editor.value], { type: 'text/markdown' });
-    download(blob, 'document.md');
+    download(blob, filename);
 }
 
-function exportHtml() {
-    const style = `
+async function exportHtml() {
+    const filename = await getExportFileName('html');
+    if (!filename) return;
+    showToast('Preparing HTML…');
+    
+    const wasDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    let overlay = null;
+    
+    try {
+        if (wasDark) {
+            // Create a dark overlay to prevent flashing
+            overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100vw';
+            overlay.style.height = '100vh';
+            overlay.style.backgroundColor = '#111318';
+            overlay.style.zIndex = '10000';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.color = '#e2e8f0';
+            overlay.style.fontFamily = 'sans-serif';
+            overlay.style.fontSize = '18px';
+            overlay.innerHTML = '<div>Generating HTML...</div>';
+            document.body.appendChild(overlay);
+
+            // Switch to light mode
+            document.documentElement.setAttribute('data-theme', 'light');
+            mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+            await renderPreview();
+        }
+        
+        const content = document.getElementById('preview-content').innerHTML;
+        const computedStyle = window.getComputedStyle(preview);
+        const fontFamily = computedStyle.fontFamily;
+        const fontSize = computedStyle.fontSize;
+        
+        const basePath = window.location.href.substring(0, window.location.href.lastIndexOf('/'));
+
+        const html = `<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${filename.replace(/\.html$/i, '')}</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" />
+    <link rel="stylesheet" href="${basePath}/style.css" />
+    <link rel="stylesheet" href="./style.css" />
     <style>
-      body { font-family: 'Georgia', serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.75; }
-      h1,h2,h3,h4,h5,h6 { font-family: sans-serif; margin: 1.4em 0 0.5em; }
-      h1 { border-bottom: 2px solid #f59e0b; padding-bottom: 0.3em; }
-      h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.25em; }
-      code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
-      pre { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; overflow-x: auto; }
-      pre code { background: none; color: inherit; }
-      blockquote { border-left: 3px solid #f59e0b; margin: 1em 0; padding: 6px 0 6px 18px; color: #555; }
-      table { border-collapse: collapse; width: 100%; }
-      th, td { border: 1px solid #ddd; padding: 8px 12px; }
-      th { background: #f3f4f6; font-weight: 600; }
-      img { max-width: 100%; }
-      a { color: #0ea5e9; }
-      hr { border: none; height: 2px; background: linear-gradient(90deg,#f59e0b,transparent); margin: 2em 0; }
+        
+        html, body {
+            background: #ffffff !important;
+            color: #1a1a1a !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
+        body {
+            font-family: ${fontFamily};
+            font-size: ${fontSize};
+            line-height: 1.75;
+            padding: 0;
+            margin: 0;
+        }
+        #preview-content {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 28px 32px 60px;
+            background: #ffffff !important;
+        }
+        .markdown-body {
+            background: #ffffff !important;
+            color: #1a1a1a !important;
+            padding: 0 !important;
+        }
+        pre {
+            white-space: pre-wrap !important;
+            word-wrap: break-word !important;
+        }
+        .copy-btn {
+            display: none !important;
+        }
     </style>
-  `;
-    const html = `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>Document</title>\n${style}\n</head>\n<body>\n${preview.innerHTML}\n</body>\n</html>`;
-    const blob = new Blob([html], { type: 'text/html' });
-    download(blob, 'document.html');
+</head>
+<body class="markdown-body">
+    <div id="preview-content">
+        ${content}
+    </div>
+</body>
+</html>`;
+
+        const blob = new Blob([html], { type: 'text/html' });
+        download(blob, filename);
+        
+    } finally {
+        if (wasDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+            await renderPreview();
+            if (overlay) overlay.remove();
+        }
+    }
 }
 
-function exportPdf() {
-    showToast('Opening print dialog…');
-    setTimeout(() => window.print(), 300);
+async function exportPdf() {
+    const filename = await getExportFileName('pdf');
+    if (!filename) return;
+    showToast('Preparing PDF…');
+    
+    const wasDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    let overlay = null;
+    
+    try {
+        if (wasDark) {
+            // Create a dark overlay to prevent flashing
+            overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100vw';
+            overlay.style.height = '100vh';
+            overlay.style.backgroundColor = '#111318';
+            overlay.style.zIndex = '10000';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.color = '#e2e8f0';
+            overlay.style.fontFamily = 'sans-serif';
+            overlay.style.fontSize = '18px';
+            overlay.innerHTML = '<div>Generating PDF...</div>';
+            document.body.appendChild(overlay);
+
+            // Switch to light mode
+            document.documentElement.setAttribute('data-theme', 'light');
+            mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+            await renderPreview();
+        }
+        
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) {
+            showToast('Popup blocked! Please allow popups.');
+            return;
+        }
+
+        const content = document.getElementById('preview-content').innerHTML;
+    const computedStyle = window.getComputedStyle(preview);
+    const fontFamily = computedStyle.fontFamily;
+    const fontSize = computedStyle.fontSize;
+
+    const html = `<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${filename.replace(/\.pdf$/i, '')}</title>
+    <base href="${window.location.href}">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" />
+    <link rel="stylesheet" href="./style.css" />
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm;
+        }
+        html, body {
+            background: #ffffff !important;
+            color: #1a1a1a !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
+        body {
+            font-family: ${fontFamily};
+            font-size: ${fontSize};
+            line-height: 1.75;
+            padding: 0;
+            margin: 0;
+        }
+        #preview-content {
+            max-width: 740px;
+            margin: 0 auto;
+            padding: 28px 32px 60px;
+            background: #ffffff !important;
+        }
+        .markdown-body {
+            background: #ffffff !important;
+            color: #1a1a1a !important;
+            padding: 0 !important;
+        }
+        pre {
+            white-space: pre-wrap !important;
+            word-wrap: break-word !important;
+        }
+        .copy-btn {
+            display: none !important;
+        }
+    </style>
+</head>
+<body class="markdown-body">
+    <div id="preview-content">
+        ${content}
+    </div>
+    <script>
+        window.onload = function() {
+            setTimeout(() => {
+                window.print();
+            }, 500);
+        };
+    </script>
+</body>
+</html>`;
+
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
+        
+    } finally {
+        if (wasDark) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+            await renderPreview();
+            if (overlay) overlay.remove();
+        }
+    }
 }
 
 function download(blob, filename) {
@@ -886,14 +1640,18 @@ document.getElementById('btn-clear').addEventListener('click', () => {
         'This will delete all content in the editor. This action cannot be undone.',
         [
             { label: 'Cancel', cls: 'btn', action: closeModal },
-            { label: 'Clear', cls: 'btn btn-danger', action: () => { editor.value = ''; renderPreview(); closeModal(); showToast('Editor cleared'); } }
+            { label: 'Clear', cls: 'btn btn-danger', action: () => { editor.value = ''; const f = getActiveFile(); if (f) f.content = ''; renderPreview(); renderTabs(); saveFilesToStorage(); closeModal(); showToast('Editor cleared'); } }
         ]
     );
 });
 
 document.getElementById('btn-format').addEventListener('click', () => {
     editor.value = formatMarkdown(editor.value);
+    const f = getActiveFile();
+    if (f) f.content = editor.value;
     renderPreview();
+    renderTabs();
+    saveFilesToStorage();
     showToast('Markdown formatted');
 });
 
@@ -904,12 +1662,16 @@ document.getElementById('btn-sample').addEventListener('click', () => {
             'Loading the sample will replace your current content. Continue?',
             [
                 { label: 'Cancel', cls: 'btn', action: closeModal },
-                { label: 'Load Sample', cls: 'btn btn-accent', action: () => { editor.value = SAMPLE; renderPreview(); closeModal(); showToast('Sample loaded'); } }
+                { label: 'Load Sample', cls: 'btn btn-accent', action: () => { editor.value = SAMPLE; const f = getActiveFile(); if (f) f.content = SAMPLE; renderPreview(); renderTabs(); saveFilesToStorage(); closeModal(); showToast('Sample loaded'); } }
             ]
         );
     } else {
         editor.value = SAMPLE;
+        const f = getActiveFile();
+        if (f) f.content = SAMPLE;
         renderPreview();
+        renderTabs();
+        saveFilesToStorage();
         showToast('Sample loaded');
     }
 });
@@ -935,7 +1697,13 @@ function formatMarkdown(md) {
 /* ─── Modal ──────────────────────────────────────────────────── */
 function showModal(title, body, actions) {
     document.getElementById('modal-title').textContent = title;
-    document.getElementById('modal-body').textContent = body;
+    const bodyDiv = document.getElementById('modal-body');
+    if (typeof body === 'string') {
+        bodyDiv.textContent = body;
+    } else {
+        bodyDiv.innerHTML = '';
+        bodyDiv.appendChild(body);
+    }
     const actionsDiv = document.getElementById('modal-actions');
     actionsDiv.innerHTML = '';
     actions.forEach(a => {
@@ -996,13 +1764,99 @@ if (toggleToolbarBtn && toolbarElement) {
 
 /* ─── Init ───────────────────────────────────────────────────── */
 (function init() {
-    const saved = localStorage.getItem(AUTOSAVE_KEY);
-    if (saved && saved.trim()) {
-        editor.value = saved;
-        showToast('Restored from auto-save');
+    // Restore files from storage
+    const savedFiles = localStorage.getItem(FILES_KEY);
+    const savedActiveId = localStorage.getItem(ACTIVE_FILE_KEY);
+
+    if (savedFiles) {
+        // Multi-file state exists
+        try {
+            files = JSON.parse(savedFiles);
+            if (files.length > 0) {
+                activeFileId = savedActiveId && files.some(f => f.id === savedActiveId)
+                    ? savedActiveId
+                    : files[0].id;
+                const file = getActiveFile();
+                if (file) editor.value = file.content;
+            } else {
+                createFile('Untitled.md', SAMPLE, true);
+            }
+        } catch (e) {
+            files = [];
+            createFile('Untitled.md', SAMPLE, true);
+        }
     } else {
-        editor.value = SAMPLE;
+        // Migrate from legacy single-file autosave or first visit
+        const legacySave = localStorage.getItem(AUTOSAVE_KEY);
+        if (legacySave && legacySave.trim()) {
+            createFile('Untitled.md', legacySave, true);
+            localStorage.removeItem(AUTOSAVE_KEY); // clean up legacy
+            showToast('Migrated from auto-save');
+        } else {
+            createFile('Untitled.md', SAMPLE, true);
+        }
     }
+
+    renderTabs();
+
+    // Restore Theme
+    const savedTheme = localStorage.getItem('livemark_theme');
+    if (savedTheme && (savedTheme === 'dark' || savedTheme === 'light')) {
+        currentTheme = savedTheme;
+        document.documentElement.setAttribute('data-theme', currentTheme);
+        document.getElementById('icon-moon').style.display = currentTheme === 'dark' ? '' : 'none';
+        document.getElementById('icon-sun').style.display = currentTheme === 'light' ? '' : 'none';
+        document.getElementById('hljs-theme-dark').disabled = currentTheme === 'light';
+        document.getElementById('hljs-theme-light').disabled = currentTheme === 'dark';
+        mermaid.initialize({ startOnLoad: false, theme: currentTheme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
+    }
+
+    // Restore Layout & Flipped
+    const savedLayout = localStorage.getItem('livemark_layout');
+    const savedFlipped = localStorage.getItem('livemark_flipped') === 'true';
+    if (savedLayout) {
+        setLayout(savedLayout, savedFlipped);
+        const map = { 'h-false': 'layout-lr', 'h-true': 'layout-rl', 'v-false': 'layout-tb', 'v-true': 'layout-bt' };
+        const key = `${savedLayout}-${savedFlipped}`;
+        if (map[key]) {
+            setActiveLayout(map[key]);
+        }
+    }
+
+    // Restore Sync Scroll
+    const savedSync = localStorage.getItem('livemark_sync_enabled');
+    if (savedSync !== null) {
+        syncEnabled = savedSync === 'true';
+        document.getElementById('sync-btn').classList.toggle('active', syncEnabled);
+    }
+
+    // Restore Spell Check
+    const savedSpell = localStorage.getItem('livemark_spell_check_enabled');
+    if (savedSpell !== null) {
+        spellCheckEnabled = savedSpell === 'true';
+        editor.setAttribute('spellcheck', spellCheckEnabled);
+        const spellBtn = document.getElementById('spellcheck-btn');
+        if (spellBtn) {
+            spellBtn.textContent = `Spell: ${spellCheckEnabled ? 'ON' : 'OFF'}`;
+            spellBtn.classList.toggle('active', spellCheckEnabled);
+        }
+    }
+
+    // Restore Font Family
+    const savedFontFamily = localStorage.getItem('livemark_font_family');
+    if (savedFontFamily && fontFamilyMap[savedFontFamily]) {
+        document.getElementById('preview-font-select').value = savedFontFamily;
+        document.getElementById('preview').style.fontFamily = fontFamilyMap[savedFontFamily];
+    }
+
+    // Restore Font Size
+    const savedFontSize = localStorage.getItem('livemark_font_size');
+    if (savedFontSize) {
+        document.getElementById('preview-font-size').value = savedFontSize;
+        document.getElementById('preview').style.fontSize = savedFontSize + 'px';
+        document.getElementById('preview-font-size-label').textContent = savedFontSize + 'px';
+    }
+
     renderPreview();
     updateLineNumbers();
     updateStatusBar();
