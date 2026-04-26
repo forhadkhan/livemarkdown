@@ -849,12 +849,34 @@ document.querySelectorAll('.export-item').forEach(item => {
     });
 });
 
+function getExportFileName(defaultExt) {
+    const h1 = preview.querySelector('h1');
+    let defaultName = 'document';
+    if (h1) {
+        const text = h1.textContent.trim().replace(/[/\\?%*:|"<>]/g, '');
+        if (text) defaultName = text;
+    }
+    const filename = prompt('Enter filename:', defaultName);
+    if (filename === null) return null; // Cancelled
+    let cleanName = filename.trim().replace(/[/\\?%*:|"<>]/g, '');
+    if (!cleanName) cleanName = 'document';
+    
+    if (!cleanName.toLowerCase().endsWith('.' + defaultExt.toLowerCase())) {
+        cleanName += '.' + defaultExt;
+    }
+    return cleanName;
+}
+
 function exportMd() {
+    const filename = getExportFileName('md');
+    if (!filename) return;
     const blob = new Blob([editor.value], { type: 'text/markdown' });
-    download(blob, 'document.md');
+    download(blob, filename);
 }
 
 async function exportHtml() {
+    const filename = getExportFileName('html');
+    if (!filename) return;
     showToast('Preparing HTML…');
     
     const wasDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -898,7 +920,7 @@ async function exportHtml() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exported Document</title>
+    <title>${filename.replace(/\.html$/i, '')}</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" />
@@ -947,7 +969,7 @@ async function exportHtml() {
 </html>`;
 
         const blob = new Blob([html], { type: 'text/html' });
-        download(blob, 'document.html');
+        download(blob, filename);
         
     } finally {
         if (wasDark) {
@@ -960,6 +982,8 @@ async function exportHtml() {
 }
 
 async function exportPdf() {
+    const filename = getExportFileName('pdf');
+    if (!filename) return;
     showToast('Preparing PDF…');
     
     const wasDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -1007,7 +1031,7 @@ async function exportPdf() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exported Document</title>
+    <title>${filename.replace(/\.pdf$/i, '')}</title>
     <base href="${window.location.href}">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
